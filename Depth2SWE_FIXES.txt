@@ -1,0 +1,139 @@
+
+What’s Working Well:
+✅ Use of modularity: swe_calc() encapsulates the core computation logic.
+✅ Interpolation is implemented cleanly using scipy.interpolate.interp2d.
+✅ Proper use of NumPy for vectorized operations.
+✅ Input data structure is flexible and easy to modify.
+✅ Logical separation of accumulation and ablation phases with a hyperbolic tangent transition.
+
+
+
+⚠️ Critical Issues and Suggestions
+
+
+❌ 1. Use of interp2d — Deprecated
+interp2d is deprecated in SciPy (as of version 1.10+). Use RegularGridInterpolator or RectBivariateSpline instead.
+
+✅ Fix:
+from scipy.interpolate import RegularGridInterpolator
+
+f_td = RegularGridInterpolator((la, ln), td)
+TD = f_td(np.array([LAT, LON]).T)
+
+f_ppt = RegularGridInterpolator((la, ln), pptwt)
+PPTWT = f_ppt(np.array([LAT, LON]).T)
+
+
+
+❌ 2. Incorrect Use of date.toordinal(date(...))
+You're calling date.toordinal like a static method, but date is already a class — not an instance.
+
+✅ Fix:
+doy = (date(Y, M, D) - date(Y, 9, 30)).days
+if doy < 0:
+    doy += 365
+
+
+
+❌ 3. Mixing Scalars and Arrays in Regression
+You treat TD and PPTWT as arrays, but H, DOY are scalars in swe_calc. If H becomes an array, the exponentiation and multiplication might break.
+
+✅ Fix:
+Ensure all inputs in swe_calc are scalars:
+
+TD = float(f_td([LAT, LON]))
+PPTWT = float(f_ppt([LAT, LON]))
+
+
+
+❌ 4. GDAL Read Format Assumption
+You are loading .txt files with gdal.Open(), which only works if the TXT files have valid header metadata (e.g., ENVI-style). If this breaks, consider np.loadtxt or rasterio.
+
+
+
+
+❌ 5. Hardcoded Grid Parameters
+The code assumes a fixed projection and grid geometry. Consider making ncols, nrows, xll, yll, clsz dynamically derived from metadata if the files are rasterized.
+
+✅ Fix (if files are raster GeoTIFFs):
+
+geo = gdal.Open('td_final.tif')
+geotrans = geo.GetGeoTransform()
+xll = geotrans[0]
+yll = geotrans[3] + geotrans[5] * geo.RasterYSize
+clsz = geotrans[1]
+
+
+
+✨ Optional Improvements
+✨ Use zip for iteration:
+
+for i, (y, m, d, h, lat, lon) in enumerate(zip(Y, M, D, H, LAT, LON)):
+    SWE[i], DOY[i] = swe_calc(y, m, d, h, lat, lon)
+
+
+
+✅ Output
+You’re printing the SWE array, but not DOY — up to your needs. Consider formatting the output or exporting to CSV if this is for analysis.
+
+
+
+✅ Cleaned Up Version (with fixes applied)
+
+import numpy as np
+from osgeo import gdal
+from scipy.interpolate import RegularGridInterpolator
+from datetime import date
+
+# Input data
+Y = [2018, 2018, 2018]
+M = [1, 11, 3]
+D = [1, 1, 1]
+H = [30, 40, 50]
+LAT = [43.5, 43.5, 43.5]
+LON = [-110.8, -110.8, -110.8]
+
+# Grid setup
+ncols, nrows = 7300, 2839
+xll, yll = -168.00051894775, 30.002598288104
+clsz = 0.014795907586
+ln = np.arange(xll, xll + ncols * clsz, clsz)
+lt = np.arange(yll, yll + nrows * clsz, clsz)
+la = np.flipud(lt)
+
+# Load data
+td = gdal.Open('td_final.txt').ReadAsArray()
+pptwt = gdal.Open('ppt_wt_final.txt').ReadAsArray()
+
+# Interpolators
+f_td = RegularGridInterpolator((la, ln), td)
+f_ppt = RegularGridInterpolator((la, ln), pptwt)
+
+def swe_calc(Y, M, D, H, LAT, LON):
+    TD = float(f_td([LAT, LON]))
+    PPTWT = float(f_ppt([LAT, LON]))
+    doy = (date(Y, M, D) - date(Y, 9, 30)).days
+    if doy < 0:
+        doy += 365
+    a = [0.0533, 0.948, 0.1701, -0.1314, 0.2922]
+    b = [0.0481, 1.0395, 0.1699, -0.0461, 0.1804]
+    SWE = a[0]*H**a[1]*PPTWT**a[2]*TD**a[3]*doy**a[4]*(-np.tanh(.01*(doy-180))+1)/2 \
+        + b[0]*H**b[1]*PPTWT**b[2]*TD**b[3]*doy**b[4]*(np.tanh(.01*(doy-180))+1)/2
+    return SWE, doy
+
+# Compute
+SWE = np.full(len(H), np.nan)
+DOY = np.full(len(H), np.nan)
+for i, (y, m, d, h, lat, lon) in enumerate(zip(Y, M, D, H, LAT, LON)):
+    SWE[i], DOY[i] = swe_calc(y, m, d, h, lat, lon)
+
+print(SWE)
+
+
+✅ Summary
+Category            Status      Notes
+Functionality	    ✅	       Works, but has deprecated functions and risky scalar/array usage
+Performance         ⚠️          interp2d is slow — RegularGridInterpolator is better
+Code Style          ✅          Readable and modular
+Robustness          ⚠️          Assumes too much about file format and grid geometry
+Future-Proofing     ⚠️          Needs updates to stay compatible with newer versions of libraries
